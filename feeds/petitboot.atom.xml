@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Store Half Byte-Reverse Indexed</title><link href="http://callumscar.github.io/" rel="alternate"></link><link href="http://callumscar.github.io/feeds/petitboot.atom.xml" rel="self"></link><id>http://callumscar.github.io/</id><updated>2015-11-03T15:02:00+11:00</updated><entry><title>What the HILE is this?</title><link href="http://callumscar.github.io/blog/2015/11/03/what-the-hile-is-this/" rel="alternate"></link><updated>2015-11-03T15:02:00+11:00</updated><author><name>Samuel Mendoza-Jonas</name></author><id>tag:callumscar.github.io,2015-11-03:blog/2015/11/03/what-the-hile-is-this/</id><summary type="html">&lt;p&gt;One of the cool features of POWER8 processors is the ability to run in either big- or little-endian mode. Several distros are already available in little-endian, but up until recently Petitboot has remained big-endian. While it has no effect on the OS, building Petitboot little-endian has its advantages, such as making support for vendor tools easier.
+So it should just be a matter of compiling Petitboot LE right? Well...&lt;/p&gt;
+&lt;h3&gt;Switching Endianess&lt;/h3&gt;
+&lt;p&gt;Endianess, and several other things besides, are controlled by the Machine State Register (MSR). Each processor in a machine has an MSR, and each bit of the MSR controls some aspect of the processor such as 64-bit mode or enabling interrupts. To switch endianess we set the LE bit (63) to 1.&lt;/p&gt;
+&lt;p&gt;When a processor first starts up it defaults to big-endian (bit 63 = 0). However the processor doesn't actually know the endianess of the kernel code it is about to execute - either it is big-endian and everything is fine, or it isn't and the processor will very quickly try to execute an illegal instruction.&lt;/p&gt;
+&lt;p&gt;The solution to this is an amazing little snippet of code in &lt;a href="https://github.com/torvalds/linux/blob/master/arch/powerpc/boot/ppc_asm.h#L65"&gt;arch/powerpc/boot/ppc_asm.h&lt;/a&gt; (follow the link to see some helpful commenting):&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="cp"&gt;#define FIXUP_ENDIAN&lt;/span&gt;
+    &lt;span class="n"&gt;tdi&lt;/span&gt;   &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mh"&gt;0x48&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="n"&gt;b&lt;/span&gt;     &lt;span class="err"&gt;$&lt;/span&gt;&lt;span class="o"&gt;+&lt;/span&gt;&lt;span class="mi"&gt;36&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0x05009f42&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0xa602487d&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0x1c004a39&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0xa600607d&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0x01006b69&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0xa6035a7d&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0xa6037b7d&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+    &lt;span class="p"&gt;.&lt;/span&gt;&lt;span class="kt"&gt;long&lt;/span&gt; &lt;span class="mh"&gt;0x2400004c&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;By some amazing coincidence if you take the opcode for &lt;code&gt;tdi 0, 0, 0x48&lt;/code&gt; and flip the order of the bytes it forms the opcode for &lt;code&gt;b . + 8&lt;/code&gt;. So if the kernel is big-endian, the processor will jump to the next instruction after this snippet. However if the kernel is little-endian we execute the next 8 instructions. These are written in reverse so that if the processor isn't in the right endian it interprets them backwards, executing the instructions shown in the linked comments above, resulting in MSR&lt;sub&gt;LE&lt;/sub&gt; being set to 1.&lt;/p&gt;
+&lt;p&gt;When booting a little-endian kernel all of the above works fine - but there is a problem for Petitboot that will become apparent a little further down...&lt;/p&gt;
+&lt;h3&gt;Petitboot's Secret Sauce&lt;/h3&gt;
+&lt;p&gt;The main feature of Petitboot is that it is a full (but small!) Linux kernel and userspace which scans all available devices and presents possible boot options. To boot an available operating system Petitboot needs to start executing the OS's kernel, which it accomplishes via &lt;a href="https://en.wikipedia.org/wiki/Kexec"&gt;kexec&lt;/a&gt;. Simply speaking kexec loads the target kernel into memory, shuts the current system down most of the way, and at the last moment sets the instruction pointer to the start of the target kernel. From there it's like booting any other kernel, including the FIXUP_ENDIAN section above.&lt;/p&gt;
+&lt;h3&gt;We've Booted! Wait...&lt;/h3&gt;
+&lt;p&gt;So our LE Petitboot kernel boots fine thanks to FIXUP_ENDIAN, we kexec into some other kernel.. and everything falls to pieces.&lt;br /&gt;
+The problem is we've unwittingly changed one of the assumptions of booting a kernel; namely that MSR&lt;sub&gt;LE&lt;/sub&gt; defaults to zero. When kexec-ing from an LE kernel we start executing the next kernel in LE mode. This itself is ok, the FIXUP_ENDIAN macro will handle the switch if needed. The problem is that the FIXUP_ENDIAN macro is relatively recent, first entering the kernel in early 2014. So if we're booting, say, an old Fedora 19 install with a v3.9 kernel - things go very bad, very quickly.&lt;/p&gt;
+&lt;h3&gt;Fix #1&lt;/h3&gt;
+&lt;p&gt;The solution seems pretty straightforward: find where we jump into the next kernel, and just before that make sure we reset the LE bit in the MSR. That's exactly what &lt;a href="https://github.com/antonblanchard/kexec-lite/commit/150b14e76a4b51f865b929ad9a9bf4133e2d3af7"&gt;this patch&lt;/a&gt; to kexec-lite does.&lt;br /&gt;
+That worked up until I tested on a machine with more than one CPU. Remembering that the MSR is processor-specific, we also have to &lt;a href="https://github.com/torvalds/linux/commit/ffebf5f391dfa9da3e086abad3eef7d3e5300249"&gt;reset the endianess of each secondary CPU&lt;/a&gt;&lt;br /&gt;
+Now things are looking good! All the CPUs are reset to big-endian, the target kernel boots fine, and then... 'recursive interrupts?!'&lt;/p&gt;
+&lt;h3&gt;HILE&lt;/h3&gt;
+&lt;p&gt;Skipping the debugging process that led to this (hint: &lt;a href="https://www.flamingspork.com/blog/2014/12/03/running-skiboot-opal-on-the-power8-simulator/"&gt;mambo&lt;/a&gt; is actually a pretty cool tool), these were the sequence of steps leading up to the problem:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Little-endian Petitboot kexecs into a big-endian kernel&lt;/li&gt;
+&lt;li&gt;All CPUs are reset to big-endian&lt;/li&gt;
+&lt;li&gt;The big-endian kernel begins to boot successfully&lt;/li&gt;
+&lt;li&gt;Somewhere in the device-tree parsing code we take an exception&lt;/li&gt;
+&lt;li&gt;Execution jumps to the exception handler at &lt;a href="https://github.com/torvalds/linux/blob/master/arch/powerpc/kernel/exceptions-64s.S#L199"&gt;0x300&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;I notice that MSR&lt;sub&gt;LE&lt;/sub&gt; is set to 1&lt;/li&gt;
+&lt;li&gt;WHAT WHY IS THE LE BIT IN THE MSR SET TO 1&lt;/li&gt;
+&lt;li&gt;We fail to read the first instruction at 0x300 because it's written in big-endian, so we jump to the exception handler at 0x300... oh no.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;And then we very busily execute nothing until the machine is killed. I spend some time staring incredulously at my screen, then appeal to a &lt;a href="https://github.com/torvalds/linux/blob/master/MAINTAINERS"&gt;higher authority&lt;/a&gt; who replies with "What is the HILE set to?"  &lt;/p&gt;
+&lt;p&gt;..the WHAT?&lt;br /&gt;
+Cracking open the &lt;a href="https://www.power.org/documentation/power-isa-v-2-07b/"&gt;PowerISA&lt;/a&gt; reveals this tidbit:&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;The Hypervisor Interrupt Little-Endian (HILE) bit is a bit
+in an implementation-dependent register or similar
+mechanism. The contents of the HILE bit are copied
+into MSR&lt;sub&gt;LE&lt;/sub&gt; by interrupts that set MSR&lt;sub&gt;HV&lt;/sub&gt; to 1 (see Section
+6.5), to establish the Endian mode for the interrupt
+handler. The HILE bit is set, by an implementation-dependent
+method, during system initialization,
+and cannot be modified after system initialization.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;To be fair, there are use cases for taking exceptions in a different endianess. The problem is that while HILE gets switched on when setting MSR&lt;sub&gt;LE&lt;/sub&gt; to 1, it &lt;em&gt;doesn't&lt;/em&gt; get turned off when MSR&lt;sub&gt;LE&lt;/sub&gt; is set to zero. In particular the line "...cannot be modified after system initialization." led to a fair amount of hand wringing from myself and whoever would listen; if we can't reset the HILE bit, we simply can't use little-endian kernels for Petitboot.  &lt;/p&gt;
+&lt;p&gt;Luckily while on some other systems the machinations of the firmware might be a complete black box, Petitboot runs on OPAL systems - which means the firmware source is &lt;a href="https://github.com/open-power/skiboot"&gt;right here&lt;/a&gt;. In particular we can see here the OPAL call to &lt;a href="https://github.com/open-power/skiboot/blob/master/core/cpu.c#L702"&gt;opal_reinit_cpus&lt;/a&gt; which among other things resets the HILE bit.&lt;br /&gt;
+This is actually what turns on the HILE bit in the first place, and is meant to be called early on in boot since it also clobbers a large amount of state. Luckily for us we don't need to hold onto any state since we're about to jump into a new kernel. We just need to choose an appropriate place where we can be sure we won't take an exception before we get into the next kernel: thus the &lt;a href="https://github.com/torvalds/linux/commit/e72bb8a5a884d022231149d407653923a1d79e53"&gt;final patch to support PowerNV machines.&lt;/a&gt;&lt;/p&gt;</summary><category term="petitboot"></category><category term="power"></category><category term="p8"></category><category term="openpower"></category><category term="goodposts"></category><category term="autoboot"></category><category term="realcontent"></category><category term="kexec"></category><category term="kernel"></category></entry></feed>
